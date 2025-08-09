@@ -50,42 +50,54 @@ class Settings:
     def __init__(self):
         self.electricity_cost_default = 0.0
         self.margin_default = 0.0
-        self.config_base_path = os.getcwd()  # Default to current working directory
-        self.config_dir = os.path.join(self.config_base_path, DEFAULT_CONFIG_DIR)
+        self.config_dir = self._get_config_directory()
         self.config_file_path = os.path.join(self.config_dir, CONFIG_FILE)
 
-    def set_config_base_path(self, base_path):
-        """Set the base path where config folder will be created"""
-        self.config_base_path = base_path
-        self.config_dir = os.path.join(base_path, DEFAULT_CONFIG_DIR)
-        self.config_file_path = os.path.join(self.config_dir, CONFIG_FILE)
+    def _get_config_directory(self):
+        """Get the configuration directory, preferring Documents folder"""
+        # Try Documents folder first
+        try:
+            documents_path = os.path.expanduser("~/Documents")
+            if os.path.exists(documents_path) and os.access(documents_path, os.W_OK):
+                config_dir = os.path.join(documents_path, DEFAULT_CONFIG_DIR)
+                return config_dir
+        except Exception:
+            pass
+        
+        # Fallback to current working directory if Documents is not accessible
+        config_dir = os.path.join(os.getcwd(), DEFAULT_CONFIG_DIR)
+        return config_dir
 
     def ensure_config_dir_exists(self):
         """Create config directory if it doesn't exist"""
-        os.makedirs(self.config_dir, exist_ok=True)
+        try:
+            os.makedirs(self.config_dir, exist_ok=True)
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create config directory:\n{e}")
+            return False
 
     def find_existing_config(self):
         """Try to find existing config file in various locations"""
         # List of potential locations to check
         search_paths = [
-            # Current config path
+            # Current config path (Documents or current dir)
             self.config_file_path,
-            # Default location (current directory)
-            os.path.join(os.getcwd(), DEFAULT_CONFIG_DIR, CONFIG_FILE),
-            # Desktop location
-            os.path.join(os.path.expanduser("~/Desktop"), DEFAULT_CONFIG_DIR, CONFIG_FILE),
-            # Documents location
+            # Documents location (in case current detection failed)
             os.path.join(os.path.expanduser("~/Documents"), DEFAULT_CONFIG_DIR, CONFIG_FILE),
-            # User home directory
+            # Current directory location
+            os.path.join(os.getcwd(), DEFAULT_CONFIG_DIR, CONFIG_FILE),
+            # Desktop location (legacy)
+            os.path.join(os.path.expanduser("~/Desktop"), DEFAULT_CONFIG_DIR, CONFIG_FILE),
+            # User home directory (legacy)
             os.path.join(os.path.expanduser("~"), DEFAULT_CONFIG_DIR, CONFIG_FILE),
         ]
         
         for config_path in search_paths:
             if os.path.exists(config_path):
                 # Found existing config, update our paths to match
-                config_dir = os.path.dirname(config_path)
-                base_path = os.path.dirname(config_dir)
-                self.set_config_base_path(base_path)
+                self.config_dir = os.path.dirname(config_path)
+                self.config_file_path = config_path
                 return True
         return False
 
@@ -99,9 +111,6 @@ class Settings:
                     data = json.load(f)
                     self.electricity_cost_default = float(data.get("electricity_cost_default", 0.0))
                     self.margin_default = float(data.get("margin_default", 0.0))
-                    # Update config base path if stored in file
-                    if "config_base_path" in data:
-                        self.set_config_base_path(data["config_base_path"])
                 return True
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load settings:\n{e}")
@@ -110,11 +119,12 @@ class Settings:
 
     def save(self, printers=None, plastics=None):
         try:
-            self.ensure_config_dir_exists()
+            if not self.ensure_config_dir_exists():
+                return
+            
             data = {
                 "electricity_cost_default": self.electricity_cost_default,
                 "margin_default": self.margin_default,
-                "config_base_path": self.config_base_path,
                 "printers": [p.to_dict() for p in (printers or [])],
                 "plastics": [p.to_dict() for p in (plastics or [])]
             }
@@ -280,9 +290,6 @@ class SettingsWindow(CenteredToplevel):
         btn_cancel = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
         btn_cancel.pack(side="right")
 
-    def _browse_config_base_path(self):
-        pass
-
     def _populate_fields(self):
         self.entries["electricity_cost_default"].delete(0, tk.END)
         self.entries["electricity_cost_default"].insert(0, str(self.settings.electricity_cost_default))
@@ -315,7 +322,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("3DPrintPrice")
-        self.geometry("600x600")
+        self.geometry("600x750")
         self.resizable(False, False)
 
         self.settings = Settings()
@@ -323,9 +330,9 @@ class App(tk.Tk):
         # Try to load existing configuration
         config_loaded = self.settings.load()
         
-        # Only ask for config path if no configuration was found anywhere
+        # If no configuration was found, create initial setup
         if not config_loaded:
-            self._ask_config_base_path()
+            self._setup_initial_config()
 
         self.printers = []
         self.plastics = []
@@ -337,68 +344,22 @@ class App(tk.Tk):
         self._load_profiles()
         self._apply_defaults_to_inputs()
 
-    def _ask_config_base_path(self):
-        result = messagebox.askyesno("First Run Setup",
-                            "This appears to be the first time running 3DPrintPrice.\n\n"
-                            "Would you like to select a custom location for configuration storage?\n\n"
-                            "Click 'Yes' to choose a folder, or 'No' to use the default location.")
-        
-        if result:
-            path = filedialog.askdirectory(
-                title="Select Base Folder (3d-print-price-config folder will be created inside)",
-                initialdir=os.path.expanduser("~/Desktop")  # Start at Desktop
-            )
-            if path:
-                self.settings.set_config_base_path(path)
-        
+    def _setup_initial_config(self):
+        """Setup initial configuration on first run"""
         try:
-            self.settings.ensure_config_dir_exists()
-            # Create initial config file with the base path saved
-            self.settings.save([], [])
-            messagebox.showinfo("Setup Complete", 
-                              f"Configuration folder created at:\n{self.settings.config_dir}")
+            if self.settings.ensure_config_dir_exists():
+                # Create initial config file
+                self.settings.save([], [])
+                messagebox.showinfo("First Run Setup", 
+                                  f"Configuration folder created at:\n{self.settings.config_dir}")
+            else:
+                # If we can't create config directory, show error and exit
+                messagebox.showerror("Error", "Failed to create configuration directory. The application will close.")
+                self.destroy()
+                return
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to create configuration:\n{e}")
+            messagebox.showerror("Error", f"Failed to setup initial configuration:\n{e}")
             self.destroy()
-
-    def _change_config_folder(self):
-        current_path = self.settings.config_base_path
-        result = messagebox.askyesno("Change Config Folder",
-                            f"Current config location: {self.settings.config_dir}\n\n"
-                            "Do you want to change the configuration folder location?\n\n"
-                            "Note: This will not move existing configurations.")
-        
-        if result:
-            path = filedialog.askdirectory(
-                title="Select New Base Folder (3d-print-price-config folder will be created inside)",
-                initialdir=current_path
-            )
-            if path and path != current_path:
-                # Save current data before changing paths
-                old_printers, old_plastics = self.printers.copy(), self.plastics.copy()
-                old_elec_cost, old_margin = self.settings.electricity_cost_default, self.settings.margin_default
-                
-                # Update paths
-                self.settings.set_config_base_path(path)
-                
-                try:
-                    self.settings.ensure_config_dir_exists()
-                    # Save current data to new location with updated base path
-                    self.settings.electricity_cost_default = old_elec_cost
-                    self.settings.margin_default = old_margin
-                    self.settings.save(old_printers, old_plastics)
-                    
-                    # Reload profiles from new location
-                    self._load_profiles()
-                    
-                    # Update UI
-                    self.label_config_path.config(text=f"Config Path: {self.settings.config_dir}")
-                    messagebox.showinfo("Success", f"Configuration folder changed to:\n{self.settings.config_dir}")
-                    
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to create new configuration:\n{e}")
-                    # Revert on error
-                    self.settings.set_config_base_path(current_path)
 
     def _create_widgets(self):
         menubar = tk.Menu(self)
@@ -410,8 +371,6 @@ class App(tk.Tk):
         
         # Config menu
         config_menu = tk.Menu(menubar, tearoff=0)
-        config_menu.add_command(label="Change Config Folder...", command=self._change_config_folder)
-        config_menu.add_separator()
         config_menu.add_command(label="Import Config...", command=self._import_config)
         config_menu.add_command(label="Export Config As...", command=self._export_config)
         menubar.add_cascade(label="Config", menu=config_menu)
@@ -488,7 +447,7 @@ class App(tk.Tk):
         frame_result = ttk.LabelFrame(self, text="Results")
         frame_result.pack(padx=10, pady=10, fill="both", expand=True)
 
-        self.result_text = tk.Text(frame_result, height=10, state="disabled")
+        self.result_text = tk.Text(frame_result, height=15, state="disabled")
         self.result_text.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _load_profiles(self):
@@ -671,18 +630,12 @@ class App(tk.Tk):
     def _open_settings(self):
         wnd = SettingsWindow(self, self.settings)
         self.wait_window(wnd)
-        # Save the updated settings and reload if path changed
-        old_config_path = self.settings.config_file_path
+        # Save the updated settings
         self._save_profiles()  # This will save with new settings
         
         # Update labels after settings change
         self.label_elec_cost.config(text=f"Electricity Cost (price/kWh): {self.settings.electricity_cost_default}")
         self.label_margin.config(text=f"Margin (%): {self.settings.margin_default}")
-        self.label_config_path.config(text=f"Config Path: {self.settings.config_dir}")
-        
-        # Reload profiles if path has changed
-        if old_config_path != self.settings.config_file_path:
-            self._load_profiles()
 
     def _import_config(self):
         path = filedialog.askopenfilename(
@@ -741,7 +694,6 @@ class App(tk.Tk):
             data = {
                 "electricity_cost_default": self.settings.electricity_cost_default,
                 "margin_default": self.settings.margin_default,
-                "config_base_path": self.settings.config_base_path,
                 "printers": [p.to_dict() for p in self.printers],
                 "plastics": [p.to_dict() for p in self.plastics]
             }
