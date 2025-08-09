@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import json
 import os
 
@@ -49,6 +49,7 @@ class Settings:
     def __init__(self):
         self.electricity_cost_default = 0.0
         self.margin_default = 0.0
+        self.profiles_path = PROFILES_FILE
 
     def load(self):
         if os.path.exists(SETTINGS_FILE):
@@ -57,6 +58,7 @@ class Settings:
                     data = json.load(f)
                     self.electricity_cost_default = float(data.get("electricity_cost_default", 0.0))
                     self.margin_default = float(data.get("margin_default", 0.0))
+                    self.profiles_path = data.get("profiles_path", PROFILES_FILE)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load settings:\n{e}")
 
@@ -65,7 +67,8 @@ class Settings:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump({
                     "electricity_cost_default": self.electricity_cost_default,
-                    "margin_default": self.margin_default
+                    "margin_default": self.margin_default,
+                    "profiles_path": self.profiles_path
                 }, f, ensure_ascii=False, indent=4)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save settings:\n{e}")
@@ -150,7 +153,6 @@ class ProfileWindow(CenteredToplevel):
                 self.entries["name"].insert(0, self.profile.name)
                 self.entries["plastic_cost"].insert(0, str(self.profile.plastic_cost))
         else:
-            # Defaults
             if self.profile_type == "printer":
                 self.entries["name"].insert(0, "")
                 self.entries["power"].insert(0, "0")
@@ -182,7 +184,7 @@ class SettingsWindow(CenteredToplevel):
         super().__init__(master)
         self.settings = settings
         self.title("Default Settings")
-        self.geometry("300x140")
+        self.geometry("400x180")
         self.resizable(False, False)
 
         self._create_widgets()
@@ -194,7 +196,8 @@ class SettingsWindow(CenteredToplevel):
 
         labels = [
             ("Electricity Cost (price/kWh):", "electricity_cost_default"),
-            ("Margin (%):", "margin_default")
+            ("Margin (%):", "margin_default"),
+            ("Profiles File Path:", "profiles_path")
         ]
 
         self.entries = {}
@@ -209,10 +212,23 @@ class SettingsWindow(CenteredToplevel):
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=10, fill="x")
 
+        btn_browse = ttk.Button(btn_frame, text="Browse...", command=self._browse_profiles_path)
+        btn_browse.pack(side="left")
+
         btn_save = ttk.Button(btn_frame, text="Save", command=self._on_save)
         btn_save.pack(side="right", padx=5)
         btn_cancel = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
         btn_cancel.pack(side="right")
+
+    def _browse_profiles_path(self):
+        path = filedialog.asksaveasfilename(
+            title="Select Profiles File",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if path:
+            self.entries["profiles_path"].delete(0, tk.END)
+            self.entries["profiles_path"].insert(0, path)
 
     def _populate_fields(self):
         self.entries["electricity_cost_default"].delete(0, tk.END)
@@ -220,6 +236,9 @@ class SettingsWindow(CenteredToplevel):
 
         self.entries["margin_default"].delete(0, tk.END)
         self.entries["margin_default"].insert(0, str(self.settings.margin_default))
+
+        self.entries["profiles_path"].delete(0, tk.END)
+        self.entries["profiles_path"].insert(0, self.settings.profiles_path)
 
     def _on_save(self):
         try:
@@ -229,8 +248,14 @@ class SettingsWindow(CenteredToplevel):
             messagebox.showerror("Error", "Please enter valid numeric values.")
             return
 
+        profiles_path = self.entries["profiles_path"].get().strip()
+        if not profiles_path:
+            messagebox.showerror("Error", "Profiles file path cannot be empty.")
+            return
+
         self.settings.electricity_cost_default = electricity_cost
         self.settings.margin_default = margin
+        self.settings.profiles_path = profiles_path
         self.settings.save()
         self.destroy()
 
@@ -250,23 +275,51 @@ class App(tk.Tk):
         self.geometry("600x600")
         self.resizable(False, False)
 
+        self.settings = Settings()
+        self.settings.load()
+
+        # Проверяем наличие файла профилей, если нет - запрашиваем путь
+        if not os.path.exists(self.settings.profiles_path):
+            self._ask_profiles_path()
+
         self.printers = []
         self.plastics = []
 
         self.current_printer = None
         self.current_plastic = None
 
-        self.settings = Settings()
-        self.settings.load()
-
         self._create_widgets()
         self._load_profiles()
         self._apply_defaults_to_inputs()
+
+    def _ask_profiles_path(self):
+        messagebox.showinfo("Profiles file not found",
+                            "Profiles file not found.\nPlease select where to save your profiles.")
+        path = filedialog.asksaveasfilename(
+            title="Select Profiles File",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if path:
+            self.settings.profiles_path = path
+            self.settings.save()
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"printers": [], "plastics": []}, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create profiles file:\n{e}")
+                self.destroy()
+        else:
+            messagebox.showwarning("No file selected", "No profiles file selected. The app will exit.")
+            self.destroy()
 
     def _create_widgets(self):
         menubar = tk.Menu(self)
         settings_menu = tk.Menu(menubar, tearoff=0)
         settings_menu.add_command(label="Default Settings...", command=self._open_settings)
+        settings_menu.add_separator()
+        settings_menu.add_command(label="Import Profiles...", command=self._import_profiles)
+        settings_menu.add_command(label="Export Profiles As...", command=self._export_profiles)
         menubar.add_cascade(label="Settings", menu=settings_menu)
         self.config(menu=menubar)
 
@@ -341,9 +394,10 @@ class App(tk.Tk):
         self.result_text.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _load_profiles(self):
-        if os.path.exists(PROFILES_FILE):
+        path = self.settings.profiles_path
+        if os.path.exists(path):
             try:
-                with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.printers = [PrinterProfile.from_dict(d) for d in data.get("printers", [])]
                 self.plastics = [PlasticProfile.from_dict(d) for d in data.get("plastics", [])]
@@ -354,13 +408,13 @@ class App(tk.Tk):
         else:
             self.printers = []
             self.plastics = []
-
         self._refresh_printer_combo()
         self._refresh_plastic_combo()
 
     def _save_profiles(self):
+        path = self.settings.profiles_path
         try:
-            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "printers": [p.to_dict() for p in self.printers],
                     "plastics": [p.to_dict() for p in self.plastics]
@@ -394,34 +448,37 @@ class App(tk.Tk):
             self._save_profiles()
             self._refresh_printer_combo()
             self.printer_combo.set(wnd.result_profile.name)
-            self.current_printer = wnd.result_profile
+            self._on_printer_selected()
 
     def _edit_printer(self):
         idx = self.printer_combo.current()
-        if idx < 0 or idx >= len(self.printers):
-            messagebox.showwarning("Warning", "Select a printer profile to edit.")
+        if idx == -1:
+            messagebox.showwarning("Warning", "No printer selected.")
             return
-        current = self.printers[idx]
-        wnd = ProfileWindow(self, "printer", profile=current, settings=self.settings)
+        profile = self.printers[idx]
+        wnd = ProfileWindow(self, "printer", profile, settings=self.settings)
         self.wait_window(wnd)
         if wnd.result_profile:
-            if wnd.result_profile.name != current.name and any(p.name == wnd.result_profile.name for p in self.printers):
+            # Проверка на дублирование имени кроме самого редактируемого
+            if any(p.name == wnd.result_profile.name and p != profile for p in self.printers):
                 messagebox.showerror("Error", "Profile with this name already exists.")
                 return
             self.printers[idx] = wnd.result_profile
             self._save_profiles()
             self._refresh_printer_combo()
             self.printer_combo.set(wnd.result_profile.name)
-            self.current_printer = wnd.result_profile
+            self._on_printer_selected()
 
     def _delete_printer(self):
         idx = self.printer_combo.current()
-        if 0 <= idx < len(self.printers):
-            name = self.printers[idx].name
-            if messagebox.askyesno("Delete Profile", f"Delete printer profile '{name}'?"):
-                self.printers.pop(idx)
-                self._save_profiles()
-                self._refresh_printer_combo()
+        if idx == -1:
+            messagebox.showwarning("Warning", "No printer selected.")
+            return
+        answer = messagebox.askyesno("Confirm", "Delete selected printer profile?")
+        if answer:
+            del self.printers[idx]
+            self._save_profiles()
+            self._refresh_printer_combo()
 
     def _refresh_plastic_combo(self):
         names = [p.name for p in self.plastics]
@@ -439,7 +496,7 @@ class App(tk.Tk):
             self.current_plastic = self.plastics[idx]
 
     def _create_plastic(self):
-        wnd = ProfileWindow(self, "plastic")
+        wnd = ProfileWindow(self, "plastic", settings=self.settings)
         self.wait_window(wnd)
         if wnd.result_profile:
             if any(p.name == wnd.result_profile.name for p in self.plastics):
@@ -449,89 +506,145 @@ class App(tk.Tk):
             self._save_profiles()
             self._refresh_plastic_combo()
             self.plastic_combo.set(wnd.result_profile.name)
-            self.current_plastic = wnd.result_profile
+            self._on_plastic_selected()
 
     def _edit_plastic(self):
         idx = self.plastic_combo.current()
-        if idx < 0 or idx >= len(self.plastics):
-            messagebox.showwarning("Warning", "Select a plastic profile to edit.")
+        if idx == -1:
+            messagebox.showwarning("Warning", "No plastic selected.")
             return
-        current = self.plastics[idx]
-        wnd = ProfileWindow(self, "plastic", profile=current)
+        profile = self.plastics[idx]
+        wnd = ProfileWindow(self, "plastic", profile, settings=self.settings)
         self.wait_window(wnd)
         if wnd.result_profile:
-            if wnd.result_profile.name != current.name and any(p.name == wnd.result_profile.name for p in self.plastics):
+            if any(p.name == wnd.result_profile.name and p != profile for p in self.plastics):
                 messagebox.showerror("Error", "Profile with this name already exists.")
                 return
             self.plastics[idx] = wnd.result_profile
             self._save_profiles()
             self._refresh_plastic_combo()
             self.plastic_combo.set(wnd.result_profile.name)
-            self.current_plastic = wnd.result_profile
+            self._on_plastic_selected()
 
     def _delete_plastic(self):
         idx = self.plastic_combo.current()
-        if 0 <= idx < len(self.plastics):
-            name = self.plastics[idx].name
-            if messagebox.askyesno("Delete Profile", f"Delete plastic profile '{name}'?"):
-                self.plastics.pop(idx)
-                self._save_profiles()
-                self._refresh_plastic_combo()
+        if idx == -1:
+            messagebox.showwarning("Warning", "No plastic selected.")
+            return
+        answer = messagebox.askyesno("Confirm", "Delete selected plastic profile?")
+        if answer:
+            del self.plastics[idx]
+            self._save_profiles()
+            self._refresh_plastic_combo()
 
     def _apply_defaults_to_inputs(self):
-        # Could initialize input fields here if needed
+        # Можно сюда вставить, если хочешь подставлять значения по умолчанию в поля ввода
         pass
 
-    def _open_settings(self):
-        wnd = SettingsWindow(self, self.settings)
-        self.wait_window(wnd)
-        # Update displayed settings after closing settings window
-        self.label_elec_cost.config(text=f"Electricity Cost (price/kWh): {self.settings.electricity_cost_default}")
-        self.label_margin.config(text=f"Margin (%): {self.settings.margin_default}")
-
     def _calculate(self):
-        if self.current_printer is None or self.current_plastic is None:
-            messagebox.showwarning("Warning", "Select printer and plastic profiles first.")
+        if self.current_printer is None:
+            messagebox.showwarning("Warning", "Select a printer profile first.")
+            return
+        if self.current_plastic is None:
+            messagebox.showwarning("Warning", "Select a plastic profile first.")
             return
         try:
             weight = float(self.entries_input["weight"].get().replace(",", "."))
             time = float(self.entries_input["time"].get().replace(",", "."))
             extra = float(self.entries_input["extra"].get().replace(",", "."))
         except ValueError:
-            messagebox.showerror("Error", "Invalid numeric input in weight, time or extra cost.")
-            return
-        if weight <= 0 or time <= 0:
-            messagebox.showwarning("Warning", "Weight and print time must be positive numbers.")
+            messagebox.showerror("Error", "Invalid numeric input.")
             return
 
-        # Calculations:
-        plastic_cost = (weight / 1000) * self.current_plastic.plastic_cost  # price for plastic by weight
-        electricity_cost = (self.current_printer.power * time / 1000) * self.settings.electricity_cost_default
-        amortization_cost = self.current_printer.amortization * time
-        base_cost = plastic_cost + electricity_cost + amortization_cost + extra
-        margin_multiplier = 1 + (self.settings.margin_default / 100)
-        final_cost = base_cost * margin_multiplier
+        # Расчёты
+        power_kw = self.current_printer.power / 1000.0
+        elec_cost = self.settings.electricity_cost_default
+        margin = self.settings.margin_default / 100.0
+
+        amort = self.current_printer.amortization * time
+        elec = power_kw * time * elec_cost
+        plastic_cost = (weight / 1000.0) * self.current_plastic.plastic_cost
+        base_price = amort + elec + plastic_cost + extra
+        price_with_margin = base_price * (1 + margin)
 
         if self.round_var.get():
-            final_cost = custom_round(final_cost)
+            final_price = custom_round(price_with_margin)
+        else:
+            final_price = round(price_with_margin, 2)
 
         result = (
+            f"Calculation Results:\n"
             f"Printer: {self.current_printer.name}\n"
-            f"Plastic: {self.current_plastic.name}\n"
+            f"Plastic: {self.current_plastic.name}\n\n"
             f"Weight: {weight} g\n"
             f"Print Time: {time} h\n"
             f"Additional Costs: {extra}\n\n"
+            f"Amortization Cost: {amort:.2f}\n"
+            f"Electricity Cost: {elec:.2f}\n"
             f"Plastic Cost: {plastic_cost:.2f}\n"
-            f"Electricity Cost: {electricity_cost:.2f}\n"
-            f"Amortization Cost: {amortization_cost:.2f}\n"
-            f"Base Cost (without margin): {base_cost:.2f}\n"
-            f"Margin: {self.settings.margin_default}%\n"
-            f"Final Cost: {final_cost:.2f}"
+            f"Base Price (sum): {base_price:.2f}\n"
+            f"Price with Margin ({self.settings.margin_default}%): {price_with_margin:.2f}\n"
+            f"Final Price (rounded): {final_price}\n"
         )
         self.result_text.config(state="normal")
         self.result_text.delete("1.0", tk.END)
         self.result_text.insert(tk.END, result)
         self.result_text.config(state="disabled")
+
+    def _open_settings(self):
+        wnd = SettingsWindow(self, self.settings)
+        self.wait_window(wnd)
+        # Обновляем надписи после изменения настроек
+        self.label_elec_cost.config(text=f"Electricity Cost (price/kWh): {self.settings.electricity_cost_default}")
+        self.label_margin.config(text=f"Margin (%): {self.settings.margin_default}")
+        # Перезагружаем профили если путь изменился
+        self._load_profiles()
+
+    def _import_profiles(self):
+        path = filedialog.askopenfilename(
+            title="Import Profiles JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            imported_printers = [PrinterProfile.from_dict(d) for d in data.get("printers", [])]
+            imported_plastics = [PlasticProfile.from_dict(d) for d in data.get("plastics", [])]
+
+            # Можно добавить логику слияния или перезаписи. Сейчас просто добавляем, если нет дубликатов
+            for p in imported_printers:
+                if not any(existing.name == p.name for existing in self.printers):
+                    self.printers.append(p)
+            for p in imported_plastics:
+                if not any(existing.name == p.name for existing in self.plastics):
+                    self.plastics.append(p)
+
+            self._save_profiles()
+            self._refresh_printer_combo()
+            self._refresh_plastic_combo()
+            messagebox.showinfo("Import", "Profiles imported successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import profiles:\n{e}")
+
+    def _export_profiles(self):
+        path = filedialog.asksaveasfilename(
+            title="Export Profiles As",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "printers": [p.to_dict() for p in self.printers],
+                    "plastics": [p.to_dict() for p in self.plastics]
+                }, f, ensure_ascii=False, indent=4)
+            messagebox.showinfo("Export", "Profiles exported successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export profiles:\n{e}")
 
 if __name__ == "__main__":
     app = App()
