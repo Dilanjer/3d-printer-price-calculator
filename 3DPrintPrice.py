@@ -50,6 +50,8 @@ class Settings:
     def __init__(self):
         self.electricity_cost_default = 0.0
         self.margin_default = 0.0
+        self.last_selected_printer = ""
+        self.last_selected_plastic = ""
         self.config_dir = self._get_config_directory()
         self.config_file_path = os.path.join(self.config_dir, CONFIG_FILE)
 
@@ -111,6 +113,8 @@ class Settings:
                     data = json.load(f)
                     self.electricity_cost_default = float(data.get("electricity_cost_default", 0.0))
                     self.margin_default = float(data.get("margin_default", 0.0))
+                    self.last_selected_printer = data.get("last_selected_printer", "")
+                    self.last_selected_plastic = data.get("last_selected_plastic", "")
                 return True
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load settings:\n{e}")
@@ -125,6 +129,8 @@ class Settings:
             data = {
                 "electricity_cost_default": self.electricity_cost_default,
                 "margin_default": self.margin_default,
+                "last_selected_printer": self.last_selected_printer,
+                "last_selected_plastic": self.last_selected_plastic,
                 "printers": [p.to_dict() for p in (printers or [])],
                 "plastics": [p.to_dict() for p in (plastics or [])]
             }
@@ -343,6 +349,9 @@ class App(tk.Tk):
         self._create_widgets()
         self._load_profiles()
         self._apply_defaults_to_inputs()
+        
+        # Register cleanup on window close
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _setup_initial_config(self):
         """Setup initial configuration on first run"""
@@ -456,13 +465,32 @@ class App(tk.Tk):
         self._refresh_plastic_combo()
 
     def _save_profiles(self):
+        # Update the last selected profiles before saving
+        self._update_last_selected()
         self.settings.save(self.printers, self.plastics)
+
+    def _update_last_selected(self):
+        """Update the last selected printer and plastic in settings"""
+        if self.current_printer:
+            self.settings.last_selected_printer = self.current_printer.name
+        if self.current_plastic:
+            self.settings.last_selected_plastic = self.current_plastic.name
 
     def _refresh_printer_combo(self):
         names = [p.name for p in self.printers]
         self.printer_combo["values"] = names
+        
+        # Try to restore last selected printer
         if names:
-            self.printer_combo.current(0)
+            selected_idx = 0
+            if self.settings.last_selected_printer:
+                try:
+                    selected_idx = names.index(self.settings.last_selected_printer)
+                except ValueError:
+                    # If last selected printer no longer exists, use first one
+                    selected_idx = 0
+            
+            self.printer_combo.current(selected_idx)
             self._on_printer_selected()
         else:
             self.printer_combo.set("")
@@ -472,6 +500,9 @@ class App(tk.Tk):
         idx = self.printer_combo.current()
         if 0 <= idx < len(self.printers):
             self.current_printer = self.printers[idx]
+            # Save selection immediately when changed by user
+            if event is not None:  # Only save if triggered by user interaction
+                self._save_profiles()
 
     def _create_printer(self):
         wnd = ProfileWindow(self, "printer", settings=self.settings)
@@ -513,14 +544,27 @@ class App(tk.Tk):
         answer = messagebox.askyesno("Confirm", "Delete selected printer profile?")
         if answer:
             del self.printers[idx]
+            # Clear last selected if it was the deleted one
+            if self.current_printer and self.current_printer.name == self.settings.last_selected_printer:
+                self.settings.last_selected_printer = ""
             self._save_profiles()
             self._refresh_printer_combo()
 
     def _refresh_plastic_combo(self):
         names = [p.name for p in self.plastics]
         self.plastic_combo["values"] = names
+        
+        # Try to restore last selected plastic
         if names:
-            self.plastic_combo.current(0)
+            selected_idx = 0
+            if self.settings.last_selected_plastic:
+                try:
+                    selected_idx = names.index(self.settings.last_selected_plastic)
+                except ValueError:
+                    # If last selected plastic no longer exists, use first one
+                    selected_idx = 0
+            
+            self.plastic_combo.current(selected_idx)
             self._on_plastic_selected()
         else:
             self.plastic_combo.set("")
@@ -530,6 +574,9 @@ class App(tk.Tk):
         idx = self.plastic_combo.current()
         if 0 <= idx < len(self.plastics):
             self.current_plastic = self.plastics[idx]
+            # Save selection immediately when changed by user
+            if event is not None:  # Only save if triggered by user interaction
+                self._save_profiles()
 
     def _create_plastic(self):
         wnd = ProfileWindow(self, "plastic", settings=self.settings)
@@ -570,6 +617,9 @@ class App(tk.Tk):
         answer = messagebox.askyesno("Confirm", "Delete selected plastic profile?")
         if answer:
             del self.plastics[idx]
+            # Clear last selected if it was the deleted one
+            if self.current_plastic and self.current_plastic.name == self.settings.last_selected_plastic:
+                self.settings.last_selected_plastic = ""
             self._save_profiles()
             self._refresh_plastic_combo()
 
@@ -655,6 +705,12 @@ class App(tk.Tk):
             if "margin_default" in data:
                 self.settings.margin_default = float(data["margin_default"])
             
+            # Load last selected profiles if they exist
+            if "last_selected_printer" in data:
+                self.settings.last_selected_printer = data["last_selected_printer"]
+            if "last_selected_plastic" in data:
+                self.settings.last_selected_plastic = data["last_selected_plastic"]
+            
             # Load profiles
             imported_printers = [PrinterProfile.from_dict(d) for d in data.get("printers", [])]
             imported_plastics = [PlasticProfile.from_dict(d) for d in data.get("plastics", [])]
@@ -691,9 +747,13 @@ class App(tk.Tk):
         try:
             # Ensure the directory exists before saving
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Update last selected before export
+            self._update_last_selected()
             data = {
                 "electricity_cost_default": self.settings.electricity_cost_default,
                 "margin_default": self.settings.margin_default,
+                "last_selected_printer": self.settings.last_selected_printer,
+                "last_selected_plastic": self.settings.last_selected_plastic,
                 "printers": [p.to_dict() for p in self.printers],
                 "plastics": [p.to_dict() for p in self.plastics]
             }
@@ -702,6 +762,12 @@ class App(tk.Tk):
             messagebox.showinfo("Export", "Configuration exported successfully.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export configuration:\n{e}")
+
+    def _on_closing(self):
+        """Called when the application is closing"""
+        # Save the current selections before closing
+        self._save_profiles()
+        self.destroy()
 
 if __name__ == "__main__":
     app = App()
